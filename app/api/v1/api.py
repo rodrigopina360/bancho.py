@@ -344,6 +344,7 @@ async def api_get_most_recent_score(
     user_id: int | None = Query(None, alias="id", ge=3, le=2_147_483_647),
     username: str | None = Query(None, alias="name", pattern=regexes.USERNAME.pattern),
     mode_arg: int = Query(0, alias="mode", ge=0, le=11),
+    limit: int = Query(25, ge=1, le=100),
 ) -> Response:
     """Return the user's most recent score"""
     if mode_arg in (
@@ -399,7 +400,8 @@ async def api_get_most_recent_score(
         "mode": mode,
     }
 
-    query.append(f"ORDER BY t.play_time DESC LIMIT 1")
+    query.append(f"ORDER BY t.play_time DESC LIMIT :limit")
+    params["limit"] = limit
 
     rows = [
         dict(row)
