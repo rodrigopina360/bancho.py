@@ -432,6 +432,7 @@ async def api_get_most_recent_score(
                 proc_bmap["diff"] = f"{result[0]['difficulty']['stars']:.2f}"
                 row["beatmap"] = proc_bmap
         except:
+            log("Failed to use new SR, fallback to old", Ansi.LYELLOW)
             row["beatmap"] = proc_bmap
 
     clan: clans_repo.Clan | None = None
