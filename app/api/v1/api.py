@@ -22,6 +22,8 @@ import app.usecases.performance
 from app.constants import regexes
 from app.constants.gamemodes import GameMode
 from app.constants.mods import Mods
+from app.logging import Ansi
+from app.logging import log
 from app.objects.beatmap import Beatmap
 from app.objects.beatmap import ensure_osu_file_is_available
 from app.repositories import clans as clans_repo
@@ -333,6 +335,128 @@ async def api_get_player_status(
                     "beatmap": bmap.as_dict if bmap else None,
                 },
             },
+        },
+    )
+
+
+@router.get("/get_most_recent_score")
+async def api_get_most_recent_score(
+    user_id: int | None = Query(None, alias="id", ge=3, le=2_147_483_647),
+    username: str | None = Query(None, alias="name", pattern=regexes.USERNAME.pattern),
+    mode_arg: int = Query(0, alias="mode", ge=0, le=11),
+) -> Response:
+    """Return the user's most recent score"""
+    if mode_arg in (
+        GameMode.RELAX_MANIA,
+        GameMode.AUTOPILOT_CATCH,
+        GameMode.AUTOPILOT_TAIKO,
+        GameMode.AUTOPILOT_MANIA,
+    ):
+        return ORJSONResponse(
+            {"status": "Game mode not supported."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if username and user_id:
+        return ORJSONResponse(
+            {"status": "No username/userId provided!"},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if username:
+        player = await app.state.sessions.players.from_cache_or_sql(name=username)
+    elif user_id:
+        player = await app.state.sessions.players.from_cache_or_sql(id=user_id)
+    else:
+        return ORJSONResponse(
+            {"status": "No username/userId provided!"},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not player:
+        return ORJSONResponse(
+            {"status": "Player not found."},
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    # parse args (scope, mode, mods, limit)
+
+    mode = GameMode(mode_arg)
+
+    # build sql query & fetch info
+
+    query = [
+        "SELECT t.id, t.map_md5, t.score, t.pp, t.acc, t.max_combo, "
+        "t.mods, t.n300, t.n100, t.n50, t.nmiss, t.ngeki, t.nkatu, t.grade, "
+        "t.status, t.mode, t.play_time, t.time_elapsed, t.perfect "
+        "FROM scores t "
+        "INNER JOIN maps b ON t.map_md5 = b.md5 "
+        "WHERE t.userid = :user_id AND t.mode = :mode",
+    ]
+
+    params: dict[str, object] = {
+        "user_id": player.id,
+        "mode": mode,
+    }
+
+    query.append(f"ORDER BY t.play_time DESC LIMIT 1")
+
+    rows = [
+        dict(row)
+        for row in await app.state.services.database.fetch_all(" ".join(query), params)
+    ]
+
+    # fetch & return info from sql
+    for row in rows:
+        bmap = await Beatmap.from_md5(row.pop("map_md5"))
+        proc_bmap = bmap.as_dict if bmap else None
+        try:
+            if proc_bmap is not None:
+                score_args = ScoreParams(
+                    mode=mode_arg,
+                    mods=int(row["mods"]),
+                    combo=row["max_combo"],
+                    ngeki=row["ngeki"],
+                    n300=row["n300"],
+                    nkatu=row["nkatu"],
+                    n100=row["n100"],
+                    n50=row["n50"],
+                    nmiss=row["nmiss"],
+                )
+                
+                result = app.usecases.performance.calculate_performances(
+                    osu_file_path=str(BEATMAPS_PATH / f"{proc_bmap['id']}.osu"),
+                    scores=[score_args],
+                )
+
+                proc_bmap["diff"] = f"{result[0]['difficulty']['stars']:.2f}"
+                row["beatmap"] = proc_bmap
+        except:
+            row["beatmap"] = proc_bmap
+
+    clan: clans_repo.Clan | None = None
+    if player.clan_id:
+        clan = await clans_repo.fetch_one(id=player.clan_id)
+
+    player_info = {
+        "id": player.id,
+        "name": player.name,
+        "clan": (
+            {
+                "id": clan["id"],
+                "name": clan["name"],
+                "tag": clan["tag"],
+            }
+            if clan is not None
+            else None
+        ),
+    }
+
+    return ORJSONResponse(
+        {
+            "status": "success",
+            "scores": rows,
+            "player": player_info,
         },
     )
 
